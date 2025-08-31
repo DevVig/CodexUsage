@@ -14,6 +14,26 @@ function estimateTokensFromText(text) {
   return Math.max(0, Math.round(text.length / 4));
 }
 
+function tokensFromEvent(ev) {
+  const usage = ev?.message?.usage;
+  if (usage && (typeof usage.input_tokens === 'number' || typeof usage.output_tokens === 'number')) {
+    const input = usage.input_tokens ?? 0;
+    const output = usage.output_tokens ?? 0;
+    const ccreate = usage.cache_creation_input_tokens ?? 0;
+    const cread = usage.cache_read_input_tokens ?? 0;
+    return input + output + ccreate + cread;
+  }
+  let tokens = 0;
+  if (ev.type === 'message' && Array.isArray(ev.content)) {
+    for (const c of ev.content) {
+      if (typeof c.text === 'string') tokens += estimateTokensFromText(c.text);
+    }
+  } else if (typeof ev.text === 'string') {
+    tokens += estimateTokensFromText(ev.text);
+  }
+  return tokens;
+}
+
 export async function listSessionFiles(limit = 5000) {
   const roots = getSessionRoots();
   const patterns = roots.map(r => path.join(r, '**', '*.jsonl').replaceAll('\\', '/'));
@@ -55,14 +75,9 @@ export function accumulateMetrics(events) {
     const ts = ev.timestamp ?? ev.ts ? new Date((ev.timestamp ?? (ev.ts * 1000))) : null;
     const minuteKey = ts ? new Date(ts.getFullYear(), ts.getMonth(), ts.getDate(), ts.getHours(), ts.getMinutes(), 0, 0).toISOString() : null;
 
-    let tokens = 0;
+    let tokens = tokensFromEvent(ev);
     if (ev.type === 'message' && Array.isArray(ev.content)) {
-      for (const c of ev.content) {
-        if (typeof c.text === 'string') tokens += estimateTokensFromText(c.text);
-      }
       totalMessages += 1;
-    } else if (typeof ev.text === 'string') {
-      tokens += estimateTokensFromText(ev.text);
     }
 
     totalTokens += tokens;
@@ -81,6 +96,40 @@ export function accumulateMetrics(events) {
 export async function loadSnapshot() {
   const events = await loadAllEvents();
   return accumulateMetrics(events);
+}
+
+function extractCandidateTimestampsFromText(text) {
+  const candidates = [];
+  if (!text || typeof text !== 'string') return candidates;
+  // ccusage-style: "Claude AI usage limit reached |<epochSeconds>"
+  {
+    const m = text.match(/\|(\d{10})(?:\b|$)/);
+    if (m) candidates.push(Number(m[1]) * 1000);
+  }
+  // Generic: look for 10-digit epoch seconds near words reset/limit
+  if (/limit|reset|window|quota/i.test(text)) {
+    const ms = text.match(/\b(1\d{9})\b/g);
+    if (ms) for (const s of ms) candidates.push(Number(s) * 1000);
+  }
+  return candidates;
+}
+
+function findLatestResetTimestamp(events) {
+  let best = null;
+  for (const ev of events) {
+    const texts = [];
+    if (typeof ev.text === 'string') texts.push(ev.text);
+    if (ev.content && Array.isArray(ev.content)) {
+      for (const c of ev.content) if (typeof c.text === 'string') texts.push(c.text);
+    }
+    for (const t of texts) {
+      const times = extractCandidateTimestampsFromText(t);
+      for (const ts of times) {
+        if (Number.isFinite(ts) && (best == null || ts > best)) best = ts;
+      }
+    }
+  }
+  return best; // ms epoch or null
 }
 
 // Low-latency snapshot updates: chokidar filesystem watch + debounced refresh.
@@ -129,12 +178,7 @@ export async function loadDailyReport() {
     }
     if (!key) continue;
 
-    let tokens = 0;
-    if (ev.type === 'message' && Array.isArray(ev.content)) {
-      for (const c of ev.content) if (typeof c.text === 'string') tokens += estimateTokensFromText(c.text);
-    } else if (typeof ev.text === 'string') {
-      tokens += estimateTokensFromText(ev.text);
-    }
+    const tokens = tokensFromEvent(ev);
 
     const prev = byDate.get(key) ?? { tokens: 0, messages: 0 };
     byDate.set(key, { tokens: prev.tokens + tokens, messages: prev.messages + (tokens > 0 ? 1 : 0) });
@@ -142,4 +186,75 @@ export async function loadDailyReport() {
   const rows = Array.from(byDate.entries()).map(([date, v]) => ({ date, ...v }));
   rows.sort((a,b) => a.date.localeCompare(b.date));
   return rows;
+}
+
+// Compute current block stats (e.g., 5-hour window), optional soft cap.
+export async function loadCurrentBlockStats({
+  windowHours = Number(process.env.CODEX_BLOCK_WINDOW_HOURS ?? '5'),
+  tokenLimit = process.env.CODEX_BLOCK_TOKEN_LIMIT ? Number(process.env.CODEX_BLOCK_TOKEN_LIMIT) : undefined,
+  burnWindowMinutes = Number(process.env.CODEX_BURN_WINDOW_MINUTES ?? '10'),
+} = {}) {
+  const events = await loadAllEvents();
+  const now = Date.now();
+  const windowMs = windowHours * 60 * 60 * 1000;
+  // Prefer explicit reset timestamps if present
+  const explicitResetMs = findLatestResetTimestamp(events);
+  let start;
+  let end;
+  if (explicitResetMs && explicitResetMs > now - windowMs && explicitResetMs > now) {
+    // If we have an upcoming reset within the plausible window, use it as end
+    end = explicitResetMs;
+    start = end - windowMs;
+  } else {
+    // Align to epoch buckets
+    start = Math.floor(now / windowMs) * windowMs;
+    end = start + windowMs;
+  }
+
+  let tokensInBlock = 0;
+  const burnStart = now - burnWindowMinutes * 60 * 1000;
+  let tokensInBurnWindow = 0;
+
+  for (const ev of events) {
+    const tsMs = ev.timestamp ? Date.parse(ev.timestamp) : (ev.ts ? ev.ts * 1000 : undefined);
+    if (!tsMs) continue;
+    if (tsMs >= start && tsMs < end) {
+      const t = tokensFromEvent(ev);
+      tokensInBlock += t;
+      if (tsMs >= burnStart) tokensInBurnWindow += t;
+    }
+  }
+
+  const minutes = Math.max(1, (now - burnStart) / 60000);
+  const tokensPerMinute = tokensInBurnWindow / minutes;
+  const remainingMs = Math.max(0, end - now);
+  const percentOfLimit = tokenLimit ? Math.min(100, (tokensInBlock / tokenLimit) * 100) : undefined;
+  const minutesToHitLimit = tokenLimit && tokensPerMinute > 0
+    ? Math.max(0, (tokenLimit - tokensInBlock) / tokensPerMinute)
+    : undefined;
+
+  // Build a short burn series for mini-chart (last 60 min)
+  const seriesStart = now - 60 * 60000;
+  const perMinute = new Map();
+  for (const ev of events) {
+    const tsMs = ev.timestamp ? Date.parse(ev.timestamp) : (ev.ts ? ev.ts * 1000 : undefined);
+    if (!tsMs || tsMs < seriesStart) continue;
+    const t = tokensFromEvent(ev);
+    const bucket = Math.floor(tsMs / 60000) * 60000;
+    perMinute.set(bucket, (perMinute.get(bucket) ?? 0) + t);
+  }
+  const burnTimeline = Array.from({ length: 60 }).map((_, i) => seriesStart + i * 60000);
+  const burnValues = burnTimeline.map(ts => perMinute.get(ts) ?? 0);
+
+  return {
+    window: { start, end, windowHours },
+    tokensInBlock,
+    tokenLimit,
+    percentOfLimit,
+    remainingMs,
+    burn: { tokensPerMinute, windowMinutes: burnWindowMinutes },
+    etaMinutesToLimit: minutesToHitLimit,
+    burnSeries: { timeline: burnTimeline, values: burnValues },
+    explicitResetMs,
+  };
 }

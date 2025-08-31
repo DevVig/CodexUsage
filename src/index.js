@@ -4,6 +4,8 @@ import { runDashboard } from './tui/dashboard.js';
 import { printDaily } from './reports/daily.js';
 import { printMonthly } from './reports/monthly.js';
 import { printSessions } from './reports/session.js';
+import { printBlocks } from './reports/blocks.js';
+import { printStatusline } from './reports/statusline.js';
 
 async function main() {
   const cmd = argv[2] ?? 'dashboard';
@@ -16,8 +18,14 @@ async function main() {
       await printMonthly();
     } else if (cmd === 'session' || cmd === 'sessions') {
       await printSessions();
+    } else if (cmd === 'blocks') {
+      const json = argv.includes('--json');
+      await printBlocks({ json });
+    } else if (cmd === 'statusline') {
+      const json = argv.includes('--json');
+      await printStatusline({ json });
     } else {
-      console.log('codexusage <dashboard|daily|monthly|session>');
+      console.log('codexusage <dashboard|daily|monthly|session|blocks|statusline> [--json]');
       process.exitCode = 2;
     }
   } catch (err) {
@@ -27,4 +35,3 @@ async function main() {
 }
 
 main();
-

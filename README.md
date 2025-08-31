@@ -31,6 +31,22 @@ node src/index.js daily
 node src/index.js session
 ```
 
+- Statusline (compact, for prompts/hooks)
+```
+node src/index.js statusline
+node src/index.js statusline --json | jq
+```
+
+- Current window (CLI) — human-readable
+```
+node src/index.js blocks
+```
+
+- Current window (CLI) — JSON for scripting
+```
+node src/index.js blocks --json | jq
+```
+
 Tip: Keep the dashboard open in a dedicated terminal for continuous monitoring.
 
 ## Data source
@@ -52,3 +68,15 @@ Codex logs currently don’t include token counts or model names. CodexUsage est
 
 MIT
 
+## Configuration
+
+- `CODEX_CONFIG_DIR`: override default Codex data dirs (comma-separated).
+- `CODEX_BLOCK_WINDOW_HOURS` (default: 5): rolling window size.
+- `CODEX_BLOCK_TOKEN_LIMIT` (optional): show % usage and ETA to cap.
+- `CODEX_BURN_WINDOW_MINUTES` (default: 10): averaging window for tpm.
+- UI thresholds (defaults):
+  - `CODEX_CAP_YELLOW_PERCENT=50`, `CODEX_CAP_RED_PERCENT=80`
+  - `CODEX_CAP_YELLOW_MINUTES=60`, `CODEX_CAP_RED_MINUTES=30`
+ - Alerts:
+   - `CODEX_ALERT_MINUTES=15` triggers flashing header within N minutes
+   - `CODEX_ALERT_BELL=1` rings terminal bell on critical entry
