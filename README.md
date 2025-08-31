@@ -23,6 +23,9 @@ npm install
 npm run dashboard
 # Polling fallback (e.g., network FS)
 node src/index.js dashboard --poll --interval=1000
+# Ghostty/terminfo note: if you see Setulc errors, run with
+#   CODEX_TERM=xterm-256color node src/index.js dashboard
+# or set TERM=xterm-256color for this process.
 # Interactive keys (terminal):
 #  h Help   d Toggle debug   c Compact
 #  w Anchor rolling/epoch    + / - Window hours
@@ -85,9 +88,14 @@ MIT
 - `CODEX_BURN_WINDOW_MINUTES` (default: 10): averaging window for tpm.
 - Polling fallback:
   - `CODEX_POLL_INTERVAL_MS` (default: 1000 when using --poll)
+ - Terminal compatibility:
+   - `CODEX_TERM` (override terminal type; set to `xterm-256color` if using Ghostty)
 - UI thresholds (defaults):
   - `CODEX_CAP_YELLOW_PERCENT=50`, `CODEX_CAP_RED_PERCENT=80`
   - `CODEX_CAP_YELLOW_MINUTES=60`, `CODEX_CAP_RED_MINUTES=30`
- - Alerts:
-   - `CODEX_ALERT_MINUTES=15` triggers flashing header within N minutes
-   - `CODEX_ALERT_BELL=1` rings terminal bell on critical entry
+- Alerts:
+  - `CODEX_ALERT_MINUTES=15` triggers flashing header within N minutes
+  - `CODEX_ALERT_BELL=1` rings terminal bell on critical entry
+- Estimation fallback:
+  - `CODEX_SIZE_DELTA=1` counts per-line bytes (approx/backup) when no text/usage is present in events
+    (useful when your client logs mostly state/control records without text)

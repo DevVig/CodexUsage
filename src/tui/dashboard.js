@@ -4,6 +4,12 @@ import { watchSnapshots, periodicSnapshot, loadCurrentBlockStats, loadRecentEven
 import { getTheme } from './theme.js';
 import { loadConfig, saveConfig, applyProfileEnv } from '../util/config.js';
 
+function getTerminalName() {
+  const envTerm = process.env.CODEX_TERM || process.env.TERM || '';
+  if (/ghostty/i.test(envTerm)) return 'xterm-256color';
+  return envTerm || 'xterm-256color';
+}
+
 export async function runDashboard(options = {}) {
   const poll = options.poll === true;
   let debug = options.debug === true;
@@ -26,7 +32,7 @@ export async function runDashboard(options = {}) {
   let profileIndex = Number.isInteger(userConfig.profileIndex) ? userConfig.profileIndex : 0;
   applyProfileEnv(profiles, profileIndex);
 
-  const screen = blessed.screen({ smartCSR: true, title: 'Codex Usage — Live' });
+  const screen = blessed.screen({ smartCSR: true, title: 'Codex Usage — Live', terminal: getTerminalName() });
   let grid;
   let header, line, burnMini, gauge, statsOrEvents, block, helpBox, hintBar;
 
@@ -68,21 +74,39 @@ export async function runDashboard(options = {}) {
 
   const onUpdate = async (snap) => {
     latestSnap = snap;
-    const md = `Total est. tokens: ${snap.totalTokens.toLocaleString()}  |  Messages: ${snap.totalMessages.toLocaleString()}  |  Now: ${new Date().toLocaleTimeString()}`;
+    const status = `(${anchor}) ${poll ? 'poll' : 'fs'} | ${themeName} | W:${windowHours}h B:${burnWindowMinutes}m`;
+    const md = `Total est. tokens: ${snap.totalTokens.toLocaleString()}  |  Msgs: ${snap.totalMessages.toLocaleString()}  |  ${status}  |  ${new Date().toLocaleTimeString()}`;
     header.setMarkdown(`### Codex Live Usage\n${md}`);
 
     const xs = snap.timeline.slice(-120).map(k => new Date(k).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' }));
-    let ys = snap.points.slice(-120).map(p => p.tokens);
-    if (smoothing && ys.length > 2) {
+    const base = snap.points.slice(-120).map(p => p.tokens);
+    let ys = base;
+    if (smoothing && base.length > 2) {
       const alpha = 0.2;
-      let prev = ys[0];
-      ys = ys.map((v, i) => {
+      let prev = base[0];
+      const ema = base.map((v, i) => {
         if (i === 0) return v;
         prev = alpha * v + (1 - alpha) * prev;
         return prev;
       });
+      // Plot both series for better context
+      const showLegend = (screen.width || 120) >= 120;
+      line.setData([
+        { title: 'tokens', x: xs, y: base },
+        { title: 'EMA', x: xs, y: ema },
+      ]);
+      if (line.options) line.options.showLegend = showLegend;
+    } else {
+      const showLegend = false;
+      line.setData([{ title: 'tokens', x: xs, y: ys }]);
+      if (line.options) line.options.showLegend = showLegend;
     }
-    line.setData([{ title: smoothing ? 'tokens (EMA)' : 'tokens', x: xs, y: ys }]);
+    if (line.options) {
+      line.options.style = { line: theme.lineColor, text: theme.textColor, baseline: 'black' };
+      line.options.xLabelPadding = 2;
+      line.options.xPadding = 4;
+      line.options.wholeNumbersOnly = false;
+    }
 
     if (statsOrEvents) {
       if (!debug) {

@@ -49,6 +49,11 @@ function tokensFromEvent(ev) {
       if (typeof s?.text === 'string') tokens += estimateTokensFromText(s.text);
     }
   }
+  // Optional fallback: use raw byte length when no text tokens found
+  if (tokens === 0 && process.env.CODEX_SIZE_DELTA === '1') {
+    const bytes = typeof ev._rawBytes === 'number' ? ev._rawBytes : 0;
+    if (bytes > 0) tokens = Math.max(1, Math.round(bytes / 4));
+  }
   return tokens;
 }
 
@@ -87,6 +92,8 @@ export async function parseJsonlFile(file) {
         }
         if (ts) obj.timestamp = ts;
         if (ts) lastTs = ts;
+        // Attach raw byte length for fallback size-based estimation
+        try { (obj)._rawBytes = Buffer.byteLength(line, 'utf8'); } catch { (obj)._rawBytes = 0; }
         return obj;
       } catch { return null; }
     }).filter(Boolean);
