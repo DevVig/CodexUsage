@@ -6,12 +6,14 @@ import { printMonthly } from './reports/monthly.js';
 import { printSessions } from './reports/session.js';
 import { printBlocks } from './reports/blocks.js';
 import { printStatusline } from './reports/statusline.js';
+import { printTail } from './reports/tail.js';
 
 async function main() {
   const cmd = argv[2] ?? 'dashboard';
   try {
     if (cmd === 'dashboard') {
       const poll = argv.includes('--poll');
+      const debug = argv.includes('--debug');
       // Parse --interval=NNN or --interval NNN
       let intervalMs;
       for (let i = 3; i < argv.length; i++) {
@@ -20,7 +22,7 @@ async function main() {
         if (a.startsWith('--interval=')) intervalMs = Number(a.split('=')[1]);
         else if (a === '--interval' && argv[i+1]) intervalMs = Number(argv[i+1]);
       }
-      await runDashboard({ poll, intervalMs });
+      await runDashboard({ poll, intervalMs, debug });
     } else if (cmd === 'daily') {
       await printDaily();
     } else if (cmd === 'monthly') {
@@ -33,8 +35,11 @@ async function main() {
     } else if (cmd === 'statusline') {
       const json = argv.includes('--json');
       await printStatusline({ json });
+    } else if (cmd === 'tail') {
+      const json = argv.includes('--json');
+      await printTail({ json });
     } else {
-      console.log('codexusage <dashboard|daily|monthly|session|blocks|statusline> [--json]');
+      console.log('codexusage <dashboard|daily|monthly|session|blocks|statusline|tail> [--json]');
       process.exitCode = 2;
     }
   } catch (err) {

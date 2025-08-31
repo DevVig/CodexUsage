@@ -24,12 +24,30 @@ function tokensFromEvent(ev) {
     return input + output + ccreate + cread;
   }
   let tokens = 0;
+  // message with content array
   if (ev.type === 'message' && Array.isArray(ev.content)) {
     for (const c of ev.content) {
       if (typeof c.text === 'string') tokens += estimateTokensFromText(c.text);
     }
-  } else if (typeof ev.text === 'string') {
+  }
+  // simple text
+  if (typeof ev.text === 'string') {
     tokens += estimateTokensFromText(ev.text);
+  }
+  // function_call_output: may carry large output text in 'output' string (sometimes JSON-stringified)
+  if (ev.type === 'function_call_output' && typeof ev.output === 'string') {
+    let payload = ev.output;
+    try {
+      const parsed = JSON.parse(ev.output);
+      if (parsed && typeof parsed.output === 'string') payload = parsed.output;
+    } catch { /* keep raw string */ }
+    tokens += estimateTokensFromText(payload);
+  }
+  // reasoning with summary array containing { type: 'summary_text', text }
+  if (ev.type === 'reasoning' && Array.isArray(ev.summary)) {
+    for (const s of ev.summary) {
+      if (typeof s?.text === 'string') tokens += estimateTokensFromText(s.text);
+    }
   }
   return tokens;
 }
@@ -47,8 +65,30 @@ export async function listSessionFiles(limit = 5000) {
 export async function parseJsonlFile(file) {
   try {
     const content = await fsp.readFile(file, 'utf8');
+    let lastTs = null;
     return content.split('\n').filter(Boolean).map(line => {
-      try { return JSON.parse(line); } catch { return null; }
+      try {
+        const obj = JSON.parse(line);
+        // Normalize timestamp: prefer ISO in obj.timestamp; else 'ts' seconds; else carry forward lastTs; else file mtime
+        let ts = null;
+        if (typeof obj.timestamp === 'string') {
+          ts = obj.timestamp;
+        } else if (typeof obj.ts === 'number') {
+          ts = new Date(obj.ts * 1000).toISOString();
+        } else if (lastTs != null) {
+          ts = lastTs;
+        }
+        if (ts == null) {
+          // fallback to file mtime on first unknown
+          try {
+            const st = fs.statSync(file);
+            ts = new Date(st.mtimeMs).toISOString();
+          } catch { /* ignore */ }
+        }
+        if (ts) obj.timestamp = ts;
+        if (ts) lastTs = ts;
+        return obj;
+      } catch { return null; }
     }).filter(Boolean);
   } catch { return []; }
 }
@@ -208,6 +248,7 @@ export async function loadCurrentBlockStats({
   windowHours = Number(process.env.CODEX_BLOCK_WINDOW_HOURS ?? '5'),
   tokenLimit = process.env.CODEX_BLOCK_TOKEN_LIMIT ? Number(process.env.CODEX_BLOCK_TOKEN_LIMIT) : undefined,
   burnWindowMinutes = Number(process.env.CODEX_BURN_WINDOW_MINUTES ?? '10'),
+  anchor = (process.env.CODEX_WINDOW_ANCHOR ?? 'rolling'), // 'rolling' | 'epoch'
 } = {}) {
   const events = await loadAllEvents();
   const now = Date.now();
@@ -221,9 +262,15 @@ export async function loadCurrentBlockStats({
     end = explicitResetMs;
     start = end - windowMs;
   } else {
-    // Align to epoch buckets
-    start = Math.floor(now / windowMs) * windowMs;
-    end = start + windowMs;
+    if (anchor === 'epoch') {
+      // Align to epoch buckets
+      start = Math.floor(now / windowMs) * windowMs;
+      end = start + windowMs;
+    } else {
+      // Rolling window: last N hours up to now
+      end = now;
+      start = end - windowMs;
+    }
   }
 
   let tokensInBlock = 0;
@@ -272,4 +319,30 @@ export async function loadCurrentBlockStats({
     burnSeries: { timeline: burnTimeline, values: burnValues },
     explicitResetMs,
   };
+}
+
+export async function loadRecentEvents({ withinMinutes = 10, max = 20 } = {}) {
+  const events = await loadAllEvents();
+  const now = Date.now();
+  const since = now - withinMinutes * 60000;
+  const recent = [];
+  for (const ev of events) {
+    const tsMs = ev.timestamp ? Date.parse(ev.timestamp) : (ev.ts ? ev.ts * 1000 : undefined);
+    if (!tsMs || tsMs < since) continue;
+    const tokens = tokensFromEvent(ev);
+    recent.push({
+      ts: tsMs,
+      tokens,
+      type: ev.type ?? ev.record_type ?? 'unknown',
+      file: ev.file ?? '',
+    });
+  }
+  recent.sort((a, b) => a.ts - b.ts);
+  const trimmed = recent.slice(-max);
+  return trimmed.map(r => ({
+    time: new Date(r.ts).toLocaleTimeString(),
+    tokens: r.tokens,
+    type: r.type,
+    file: r.file.split('/').slice(-1)[0] ?? '',
+  }));
 }
