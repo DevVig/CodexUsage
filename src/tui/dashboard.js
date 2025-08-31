@@ -1,17 +1,30 @@
+import blessed from 'blessed';
+import contrib from 'blessed-contrib';
+import { watchSnapshots, periodicSnapshot, loadCurrentBlockStats, loadRecentEvents, loadDailyReport } from '../data/loader.js';
 import { getTheme } from './theme.js';
+import { loadConfig, saveConfig, applyProfileEnv } from '../util/config.js';
 
 export async function runDashboard(options = {}) {
   const poll = options.poll === true;
   let debug = options.debug === true;
   const intervalMs = Number(options.intervalMs ?? process.env.CODEX_POLL_INTERVAL_MS ?? '1000');
-  const theme = getTheme();
+  let userConfig = await loadConfig();
+  let themeName = userConfig.theme || process.env.CODEX_THEME || 'default';
+  let theme = getTheme(themeName);
 
   // Dynamic controls
-  let windowHours = Number(process.env.CODEX_BLOCK_WINDOW_HOURS ?? '5');
-  let burnWindowMinutes = Number(process.env.CODEX_BURN_WINDOW_MINUTES ?? '10');
-  let anchor = (process.env.CODEX_WINDOW_ANCHOR ?? 'rolling'); // 'rolling' | 'epoch'
+  let windowHours = Number(userConfig.windowHours ?? process.env.CODEX_BLOCK_WINDOW_HOURS ?? '5');
+  let burnWindowMinutes = Number(userConfig.burnWindowMinutes ?? process.env.CODEX_BURN_WINDOW_MINUTES ?? '10');
+  let anchor = (userConfig.anchor ?? process.env.CODEX_WINDOW_ANCHOR ?? 'rolling'); // 'rolling' | 'epoch'
   let compact = false;
   let latestSnap = null;
+  let smoothing = Boolean(userConfig.smoothing ?? false);
+  const windowPresets = [1, 3, 5, 12, 24];
+
+  // Profiles
+  let profiles = Array.isArray(userConfig.profiles) ? userConfig.profiles : [];
+  let profileIndex = Number.isInteger(userConfig.profileIndex) ? userConfig.profileIndex : 0;
+  applyProfileEnv(profiles, profileIndex);
 
   const screen = blessed.screen({ smartCSR: true, title: 'Codex Usage — Live' });
   let grid;
@@ -59,8 +72,17 @@ export async function runDashboard(options = {}) {
     header.setMarkdown(`### Codex Live Usage\n${md}`);
 
     const xs = snap.timeline.slice(-120).map(k => new Date(k).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' }));
-    const ys = snap.points.slice(-120).map(p => p.tokens);
-    line.setData([{ title: 'tokens', x: xs, y: ys }]);
+    let ys = snap.points.slice(-120).map(p => p.tokens);
+    if (smoothing && ys.length > 2) {
+      const alpha = 0.2;
+      let prev = ys[0];
+      ys = ys.map((v, i) => {
+        if (i === 0) return v;
+        prev = alpha * v + (1 - alpha) * prev;
+        return prev;
+      });
+    }
+    line.setData([{ title: smoothing ? 'tokens (EMA)' : 'tokens', x: xs, y: ys }]);
 
     if (statsOrEvents) {
       if (!debug) {
@@ -113,7 +135,7 @@ export async function runDashboard(options = {}) {
     else if (pct >= CAP_Y || mins <= MIN_Y) color = 'yellow';
     if (gauge) gauge.setStack([{ percent: pct, label: `${pct}%`, stroke: color }]);
 
-    const ALERT_MIN = Number(process.env.CODEX_ALERT_MINUTES ?? '15');
+    const ALERT_MIN = Number(process.env.CODEX_ALERT_MINUTES ?? (userConfig.alertMinutes ?? 15));
     const critical = color === 'red' || remMins <= ALERT_MIN;
     if (critical) {
       if (!flashTimer) {
@@ -133,11 +155,16 @@ export async function runDashboard(options = {}) {
     screen.render();
   };
 
-  const stop = poll ? await periodicSnapshot(intervalMs, onUpdate) : await watchSnapshots(onUpdate);
+  let stop = poll ? await periodicSnapshot(intervalMs, onUpdate) : await watchSnapshots(onUpdate);
 
   screen.key(['escape', 'q', 'C-c'], () => { stop(); clearFlash(); return process.exit(0); });
 
   function rebuildAndRender() { buildLayout(); if (latestSnap) void onUpdate(latestSnap); else screen.render(); }
+
+  async function restartWatcher() {
+    if (stop) { try { await stop(); } catch {} }
+    stop = poll ? await periodicSnapshot(intervalMs, onUpdate) : await watchSnapshots(onUpdate);
+  }
 
   // Key bindings
   screen.key(['h'], () => {
@@ -155,6 +182,59 @@ export async function runDashboard(options = {}) {
   screen.key([']'], () => { burnWindowMinutes = Math.min(120, Math.max(1, burnWindowMinutes + 1)); if (latestSnap) void onUpdate(latestSnap); });
   screen.key(['['], () => { burnWindowMinutes = Math.min(120, Math.max(1, burnWindowMinutes - 1)); if (latestSnap) void onUpdate(latestSnap); });
   screen.key(['r'], () => { if (latestSnap) void onUpdate(latestSnap); });
+
+  // Theme cycle (T)
+  screen.key(['T'], async () => {
+    const order = ['default', 'solarized', 'mono'];
+    const idx = order.indexOf(themeName);
+    themeName = order[(idx + 1) % order.length];
+    theme = getTheme(themeName);
+    userConfig.theme = themeName;
+    await saveConfig(userConfig);
+    rebuildAndRender();
+  });
+
+  // Window presets cycle (W)
+  screen.key(['W'], async () => {
+    const i = windowPresets.indexOf(windowHours);
+    windowHours = windowPresets[(i + 1) % windowPresets.length];
+    userConfig.windowHours = windowHours;
+    await saveConfig(userConfig);
+    if (latestSnap) void onUpdate(latestSnap);
+  });
+
+  // Smoothing toggle (S)
+  screen.key(['S'], async () => {
+    smoothing = !smoothing;
+    userConfig.smoothing = smoothing;
+    await saveConfig(userConfig);
+    if (latestSnap) void onUpdate(latestSnap);
+  });
+
+  // Profiles cycle (P)
+  screen.key(['P'], async () => {
+    if (!profiles || profiles.length === 0) return;
+    profileIndex = (profileIndex + 1) % profiles.length;
+    userConfig.profileIndex = profileIndex;
+    await saveConfig(userConfig);
+    applyProfileEnv(profiles, profileIndex);
+    await restartWatcher();
+  });
+
+  // Export (E): blocks JSON + daily CSV
+  screen.key(['E'], async () => {
+    try {
+      const s = await loadCurrentBlockStats({ windowHours, burnWindowMinutes, anchor });
+      const daily = await loadDailyReport();
+      const stamp = new Date().toISOString().replace(/[:T]/g, '-').split('.')[0];
+      const fs = await import('node:fs/promises');
+      await fs.writeFile(`blocks-${stamp}.json`, JSON.stringify(s, null, 2));
+      const header = 'date,tokens_est,messages\n';
+      const rows = daily.map(r => `${r.date},${r.tokens},${r.messages}`).join('\n');
+      await fs.writeFile(`daily-${stamp}.csv`, header + rows + '\n');
+      screen.program.bell();
+    } catch {}
+  });
 
   screen.on('resize', () => { rebuildAndRender(); });
 

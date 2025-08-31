@@ -23,6 +23,13 @@ npm install
 npm run dashboard
 # Polling fallback (e.g., network FS)
 node src/index.js dashboard --poll --interval=1000
+# Interactive keys (terminal):
+#  h Help   d Toggle debug   c Compact
+#  w Anchor rolling/epoch    + / - Window hours
+#  [ / ] Burn window minutes  r Refresh
+#  T Theme cycle              W Window presets (1/3/5/12/24h)
+#  S Smoothing (EMA)          P Profile cycle (CODEX_CONFIG_DIR presets)
+#  E Export (blocks.json + daily.csv)   q Quit
 ```
 - Daily summary
 ```
