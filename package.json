@@ -1,0 +1,23 @@
+{
+  "name": "codexusage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "codexusage": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js dashboard",
+    "dashboard": "node src/index.js dashboard",
+    "daily": "node src/index.js daily",
+    "monthly": "node src/index.js monthly",
+    "session": "node src/index.js session"
+  },
+  "dependencies": {
+    "blessed": "^0.1.81",
+    "blessed-contrib": "^4.11.0",
+    "chokidar": "^3.6.0",
+    "tinyglobby": "^0.2.6"
+  }
+}
+
