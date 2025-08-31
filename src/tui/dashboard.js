@@ -1,8 +1,10 @@
 import blessed from 'blessed';
 import contrib from 'blessed-contrib';
-import { watchSnapshots, loadCurrentBlockStats } from '../data/loader.js';
+import { watchSnapshots, periodicSnapshot, loadCurrentBlockStats } from '../data/loader.js';
 
-export async function runDashboard() {
+export async function runDashboard(options = {}) {
+  const poll = options.poll === true;
+  const intervalMs = Number(options.intervalMs ?? process.env.CODEX_POLL_INTERVAL_MS ?? '1000');
   const screen = blessed.screen({ smartCSR: true, title: 'Codex Usage — Live' });
   const grid = new contrib.grid({ rows: 12, cols: 12, screen });
 
@@ -17,7 +19,7 @@ export async function runDashboard() {
   let flashOn = false;
   function clearFlash() { if (flashTimer) { clearInterval(flashTimer); flashTimer = null; flashOn = false; } }
 
-  const stop = await watchSnapshots(async (snap) => {
+  const onUpdate = async (snap) => {
     const md = `Total est. tokens: ${snap.totalTokens.toLocaleString()}  |  Messages: ${snap.totalMessages.toLocaleString()}  |  Now: ${new Date().toLocaleTimeString()}`;
     header.setMarkdown(`### Codex Live Usage\n${md}`);
 
@@ -87,7 +89,11 @@ export async function runDashboard() {
     }
 
     screen.render();
-  });
+  };
+
+  const stop = poll
+    ? await periodicSnapshot(intervalMs, onUpdate)
+    : await watchSnapshots(onUpdate);
 
   screen.key(['escape', 'q', 'C-c'], () => {
     stop();

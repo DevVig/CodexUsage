@@ -11,7 +11,16 @@ async function main() {
   const cmd = argv[2] ?? 'dashboard';
   try {
     if (cmd === 'dashboard') {
-      await runDashboard();
+      const poll = argv.includes('--poll');
+      // Parse --interval=NNN or --interval NNN
+      let intervalMs;
+      for (let i = 3; i < argv.length; i++) {
+        const a = argv[i];
+        if (!a) continue;
+        if (a.startsWith('--interval=')) intervalMs = Number(a.split('=')[1]);
+        else if (a === '--interval' && argv[i+1]) intervalMs = Number(argv[i+1]);
+      }
+      await runDashboard({ poll, intervalMs });
     } else if (cmd === 'daily') {
       await printDaily();
     } else if (cmd === 'monthly') {

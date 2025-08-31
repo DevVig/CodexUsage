@@ -159,6 +159,21 @@ export async function watchSnapshots(onUpdate, { debounceMs = 300 } = {}) {
   return async () => { clearTimeout(timer); await watcher.close(); };
 }
 
+// Polling fallback for environments with unreliable FS events
+export async function periodicSnapshot(intervalMs, onUpdate) {
+  let timer;
+  let stopped = false;
+  async function tick() {
+    if (stopped) return;
+    try { onUpdate(await loadSnapshot()); } catch {}
+    timer = setTimeout(tick, intervalMs);
+  }
+  // initial emit
+  try { onUpdate(await loadSnapshot()); } catch {}
+  tick();
+  return () => { stopped = true; if (timer) clearTimeout(timer); };
+}
+
 export async function loadDailyReport() {
   const events = await loadAllEvents();
   const byDate = new Map();

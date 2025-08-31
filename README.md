@@ -21,6 +21,8 @@ npm install
 - Live dashboard (auto-refreshing chart)
 ```
 npm run dashboard
+# Polling fallback (e.g., network FS)
+node src/index.js dashboard --poll --interval=1000
 ```
 - Daily summary
 ```
@@ -74,6 +76,8 @@ MIT
 - `CODEX_BLOCK_WINDOW_HOURS` (default: 5): rolling window size.
 - `CODEX_BLOCK_TOKEN_LIMIT` (optional): show % usage and ETA to cap.
 - `CODEX_BURN_WINDOW_MINUTES` (default: 10): averaging window for tpm.
+- Polling fallback:
+  - `CODEX_POLL_INTERVAL_MS` (default: 1000 when using --poll)
 - UI thresholds (defaults):
   - `CODEX_CAP_YELLOW_PERCENT=50`, `CODEX_CAP_RED_PERCENT=80`
   - `CODEX_CAP_YELLOW_MINUTES=60`, `CODEX_CAP_RED_MINUTES=30`
